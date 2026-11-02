@@ -95,6 +95,77 @@ ON CONFLICT (hour_bucket) WHERE proxy_host_id IS NULL DO UPDATE SET
     rate_limited      = EXCLUDED.rate_limited,
     bot_blocked       = EXCLUDED.bot_blocked`
 
+// Host totals reuse the global rollup's access-log filters and time buckets.
+// A NULL host ID is reserved for the dashboard's global totals. Stale host
+// rows are removed when a replay finds that their source requests disappeared.
+const hourlyHostRollupSQL = `
+WITH agg AS (
+    SELECT l.proxy_host_id, date_trunc('hour', l.created_at, 'UTC') AS hour_bucket,
+           count(*) AS total,
+           count(*) FILTER (WHERE status_code BETWEEN 200 AND 299) AS s2,
+           count(*) FILTER (WHERE status_code BETWEEN 300 AND 399) AS s3,
+           count(*) FILTER (WHERE status_code BETWEEN 400 AND 499) AS s4,
+           count(*) FILTER (WHERE status_code >= 500) AS s5,
+           COALESCE(avg(request_time) FILTER (WHERE ` + averagedRequestFilter + `) * 1000, 0) AS avg_ms,
+           count(request_time) FILTER (WHERE ` + averagedRequestFilter + `) AS timed,
+           COALESCE(sum(body_bytes_sent), 0) AS bytes,
+           count(*) FILTER (WHERE block_reason = 'waf') AS waf,
+           count(*) FILTER (WHERE block_reason = 'rate_limit') AS rl,
+           count(*) FILTER (WHERE block_reason = 'bot_filter') AS bot
+    FROM logs_partitioned l
+    JOIN proxy_hosts p ON p.id = l.proxy_host_id
+    WHERE l.log_type = 'access'
+      AND l.created_at >= date_trunc('hour', $1::timestamptz, 'UTC') AND l.created_at < $2::timestamptz
+      AND l.host IS NOT NULL
+      AND l.host NOT IN ('localhost', 'nginx', '127.0.0.1', '', '_', '0.0.0.0')
+      AND l.host NOT LIKE 'localhost:%'
+      AND (l.request_uri NOT IN ('/health', '/nginx_status') OR l.request_uri IS NULL)
+      AND (l.request_uri NOT LIKE '/.well-known/%' OR l.request_uri IS NULL)
+      AND ` + canaryURIExclusion + `
+    GROUP BY l.proxy_host_id, date_trunc('hour', l.created_at, 'UTC')
+)
+INSERT INTO dashboard_stats_hourly (
+    proxy_host_id, hour_bucket, total_requests, status_2xx, status_3xx,
+    status_4xx, status_5xx, avg_response_time, timed_requests, bytes_sent,
+    waf_blocked, rate_limited, bot_blocked
+)
+SELECT proxy_host_id, hour_bucket, total, s2, s3, s4, s5,
+       avg_ms, timed, bytes, waf, rl, bot FROM agg
+ON CONFLICT (proxy_host_id, hour_bucket) DO UPDATE SET
+    total_requests = EXCLUDED.total_requests,
+    status_2xx = EXCLUDED.status_2xx,
+    status_3xx = EXCLUDED.status_3xx,
+    status_4xx = EXCLUDED.status_4xx,
+    status_5xx = EXCLUDED.status_5xx,
+    avg_response_time = EXCLUDED.avg_response_time,
+    timed_requests = EXCLUDED.timed_requests,
+    bytes_sent = EXCLUDED.bytes_sent,
+    waf_blocked = EXCLUDED.waf_blocked,
+    rate_limited = EXCLUDED.rate_limited,
+    bot_blocked = EXCLUDED.bot_blocked`
+
+// Materialize the active host/hour pairs once within the rebuild window.
+// A correlated raw-log probe per hourly row repeatedly builds index bitmaps
+// on busy installations, even when there are no stale rows to delete.
+// A separate DELETE still runs when no host traffic survives a replay.
+const hourlyHostRollupCleanupSQL = `WITH active AS MATERIALIZED (
+    SELECT proxy_host_id, date_trunc('hour', created_at, 'UTC') AS hour_bucket
+    FROM logs_partitioned
+    WHERE created_at >= date_trunc('hour', $1::timestamptz, 'UTC')
+      AND created_at < $2::timestamptz
+      AND proxy_host_id IS NOT NULL
+      AND ` + trafficAccessFilter + `
+    GROUP BY proxy_host_id, date_trunc('hour', created_at, 'UTC')
+)
+DELETE FROM dashboard_stats_hourly d
+WHERE d.proxy_host_id IS NOT NULL
+  AND d.hour_bucket >= date_trunc('hour', $1::timestamptz, 'UTC')
+  AND d.hour_bucket < $2::timestamptz
+  AND NOT EXISTS (
+    SELECT 1 FROM active a
+    WHERE a.proxy_host_id = d.proxy_host_id AND a.hour_bucket = d.hour_bucket
+  )`
+
 // RecomputeHourlyRollup rewrites the dashboard's global hourly totals for the
 // UTC hours from from's hour up to to (exclusive; pass an hour boundary) from
 // the logs themselves, and returns how many hourly rows it wrote.
@@ -106,9 +177,23 @@ ON CONFLICT (hour_bucket) WHERE proxy_host_id IS NULL DO UPDATE SET
 // repair anything after a restart. A recompute is exact for whatever the logs
 // hold, whichever path wrote them.
 func (r *DashboardRepository) RecomputeHourlyRollup(ctx context.Context, from, to time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, hourlyRollupRecomputeSQL, from, to)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, hourlyRollupRecomputeSQL, from, to)
 	if err != nil {
 		return 0, fmt.Errorf("recompute hourly dashboard stats: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, hourlyHostRollupSQL, from, to); err != nil {
+		return 0, fmt.Errorf("recompute hourly host stats: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, hourlyHostRollupCleanupSQL, from, to); err != nil {
+		return 0, fmt.Errorf("clean stale hourly host stats: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	return result.RowsAffected()
 }

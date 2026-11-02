@@ -26,6 +26,17 @@ func (r *BackupRepository) importGlobalSettings(ctx context.Context, tx *sql.Tx,
 		enableIPv6 = *gs.EnableIPv6
 	}
 
+	// A fresh install has no global_settings row until settings are first
+	// saved, and the UPDATE below changes nothing without one: a backup
+	// restored onto a new server reported success and dropped every global
+	// setting. Create the row the way GlobalSettingsRepository.Update does.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO global_settings (id)
+		SELECT gen_random_uuid()
+		WHERE NOT EXISTS (SELECT 1 FROM global_settings LIMIT 1)`); err != nil {
+		return err
+	}
+
 	query := `
 		UPDATE global_settings SET
 			worker_processes = $1, worker_connections = $2, worker_rlimit_nofile = $3,
@@ -41,7 +52,8 @@ func (r *BackupRepository) importGlobalSettings(ctx context.Context, tx *sql.Tx,
 			ssl_ecdh_curve = $39,
 			access_log_enabled = $40, error_log_level = $41, resolver = $42, resolver_timeout = $43,
 			custom_http_config = $44, custom_stream_config = $45,
-			enable_ipv6 = $46, access_log_strip_query = $47, updated_at = NOW()
+			enable_ipv6 = $46, access_log_strip_query = $47, worker_shutdown_timeout = $48,
+			updated_at = NOW()
 	`
 
 	_, err := tx.ExecContext(ctx, query,
@@ -60,6 +72,7 @@ func (r *BackupRepository) importGlobalSettings(ctx context.Context, tx *sql.Tx,
 		gs.CustomHTTPConfig, gs.CustomStreamConfig,
 		enableIPv6,
 		gs.AccessLogStripQuery,
+		gs.WorkerShutdownTimeout,
 	)
 	return err
 }

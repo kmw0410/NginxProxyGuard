@@ -1729,6 +1729,16 @@ END $$`,
 			desc: "dashboard_stats_hourly.timed_requests",
 			sql:  `ALTER TABLE public.dashboard_stats_hourly ADD COLUMN IF NOT EXISTS timed_requests bigint DEFAULT 0 NOT NULL`,
 		},
+		// Historical proxy-host rollups are populated in small, resumable
+		// batches. The checkpoint survives API restarts and makes retries safe.
+		{
+			desc: "traffic_hourly_backfill checkpoint",
+			sql: `CREATE TABLE IF NOT EXISTS public.traffic_hourly_backfill (
+    id smallint PRIMARY KEY CHECK (id = 1),
+    next_hour timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+)`,
+		},
 		// Domain entries in access lists (#320): an allowed DNS name is a
 		// placeholder row (deny, all, hostname), which a version without the
 		// column renders as "deny all". The column and its CHECK go in one
@@ -1842,6 +1852,11 @@ END $$;`,
 		{
 			desc: "system_settings.global_trusted_hostnames (#320)",
 			sql:  `ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS global_trusted_hostnames text[] DEFAULT '{}'::text[] NOT NULL`,
+		},
+		{
+			// NULL takes model.DefaultWorkerShutdownTimeout; 0 waits for every connection.
+			desc: "global_settings.worker_shutdown_timeout (#358)",
+			sql:  `ALTER TABLE public.global_settings ADD COLUMN IF NOT EXISTS worker_shutdown_timeout integer`,
 		},
 	}
 	for _, a := range upgrades {

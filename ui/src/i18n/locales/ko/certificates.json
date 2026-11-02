@@ -213,6 +213,8 @@
         "title": "AWS 자격 증명",
         "accessKeyId": "Access Key ID",
         "secretAccessKey": "Secret Access Key",
+        "useDefaultCredentials": "AWS 기본 자격 증명 사용(액세스 키 없이)",
+        "useDefaultCredentialsHelp": "AWS 기본 자격 증명 체인으로 인증합니다: EC2 인스턴스 역할, ECS 태스크 역할 또는 API 컨테이너의 AWS_* 환경 변수. EC2에서는 인스턴스 메타데이터 홉 제한을 2로 설정해야 합니다.",
         "region": "리전",
         "hostedZoneId": "Hosted Zone ID (선택사항)"
       },

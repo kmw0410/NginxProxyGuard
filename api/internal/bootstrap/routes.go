@@ -380,6 +380,7 @@ func registerTokenProtectedRoutes(v1 *echo.Group, c *Container) {
 	registerSecurityRoutes(v1, c.Handlers.Security)
 	registerExceptionDNSRoutes(v1, c.Handlers.ExceptionDNS)
 	registerSettingsRoutes(v1, c.Handlers.Settings)
+	registerTrafficRoutes(v1, c.Handlers.Traffic)
 	registerSystemLogRoutes(v1, c.Handlers.SystemLog)
 	registerSystemSettingsRoutes(v1, c.Handlers.SystemSettings)
 	registerRawLogReclaimRoutes(v1, c.Handlers.RawLogReclaim)
@@ -652,7 +653,7 @@ func registerWAFRoutes(v1 *echo.Group, h *handler.WAFHandler) {
 	g.GET("/global/rules", echo.WrapHandler(http.HandlerFunc(h.GetGlobalRules)), wafRead)
 	g.GET("/global/exclusions", echo.WrapHandler(http.HandlerFunc(h.GetGlobalExclusions)), wafRead)
 	g.GET("/global/history", echo.WrapHandler(http.HandlerFunc(h.GetGlobalPolicyHistory)), wafRead)
-	g.POST("/global/rules/:ruleId/disable", echo.WrapHandler(http.HandlerFunc(h.DisableGlobalRule)), wafWrite)
+	g.POST("/global/rules/:ruleId/disable", handler.WithUsername(h.DisableGlobalRule), wafWrite)
 	g.DELETE("/global/rules/:ruleId/disable", echo.WrapHandler(http.HandlerFunc(h.EnableGlobalRule)), wafWrite)
 }
 
@@ -668,11 +669,11 @@ func registerExploitRuleRoutes(v1 *echo.Group, h *handler.ExploitBlockRuleHandle
 	g.PUT("/:id", echo.WrapHandler(http.HandlerFunc(h.UpdateRule)), wafWrite)
 	g.DELETE("/:id", echo.WrapHandler(http.HandlerFunc(h.DeleteRule)), wafWrite)
 	g.POST("/:id/toggle", echo.WrapHandler(http.HandlerFunc(h.ToggleRule)), wafWrite)
-	g.POST("/:id/global-exclude", echo.WrapHandler(http.HandlerFunc(h.AddGlobalExclusion)), wafWrite)
+	g.POST("/:id/global-exclude", handler.WithUsername(h.AddGlobalExclusion), wafWrite)
 	g.DELETE("/:id/global-exclude", echo.WrapHandler(http.HandlerFunc(h.RemoveGlobalExclusion)), wafWrite)
 	g.GET("/hosts", echo.WrapHandler(http.HandlerFunc(h.ListHostsWithExploitBlocking)), wafRead)
 	g.GET("/hosts/:hostId/rules", echo.WrapHandler(http.HandlerFunc(h.GetHostRules)), wafRead)
-	g.POST("/hosts/:hostId/rules/:ruleId/exclude", echo.WrapHandler(http.HandlerFunc(h.AddHostExclusion)), wafWrite)
+	g.POST("/hosts/:hostId/rules/:ruleId/exclude", handler.WithUsername(h.AddHostExclusion), wafWrite)
 	g.DELETE("/hosts/:hostId/rules/:ruleId/exclude", echo.WrapHandler(http.HandlerFunc(h.RemoveHostExclusion)), wafWrite)
 }
 
@@ -879,6 +880,15 @@ func registerSettingsRoutes(v1 *echo.Group, h *handler.SettingsHandler) {
 	backups.GET("/:id/download", h.DownloadBackup, backupRead)
 	backups.DELETE("/:id", h.DeleteBackup, backupCreate)
 	backups.POST("/:id/restore", h.RestoreBackup, backupRestore)
+}
+
+func registerTrafficRoutes(v1 *echo.Group, h *handler.TrafficHandler) {
+	read := authMiddleware.RequireAPIPermission("dashboard:read")
+	g := v1.Group("/traffic")
+	g.GET("/summary", h.Summary, read)
+	g.GET("/timeseries", h.Timeseries, read)
+	g.GET("/realtime", h.Realtime, read)
+	g.GET("/export", h.Export, read)
 }
 
 func registerSystemLogRoutes(v1 *echo.Group, h *handler.SystemLogHandler) {

@@ -489,6 +489,11 @@ CREATE TABLE IF NOT EXISTS public.dashboard_stats_hourly (
     top_ips jsonb DEFAULT '[]'::jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE IF NOT EXISTS public.traffic_hourly_backfill (
+    id smallint PRIMARY KEY CHECK (id = 1),
+    next_hour timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS public.dashboard_stats_hourly_partitioned (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     proxy_host_id uuid,
@@ -653,6 +658,7 @@ CREATE TABLE IF NOT EXISTS public.global_settings (
     worker_processes integer DEFAULT 0 NOT NULL,
     worker_connections integer DEFAULT 8192 NOT NULL,
     worker_rlimit_nofile integer,
+    worker_shutdown_timeout integer,
     multi_accept boolean DEFAULT true NOT NULL,
     use_epoll boolean DEFAULT true NOT NULL,
     sendfile boolean DEFAULT true NOT NULL,
@@ -4746,6 +4752,13 @@ ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS raw_log_archive_rete
 -- The hourly rollup fills it; the last 25 hours are rebuilt at every boot.
 ALTER TABLE public.dashboard_stats_hourly ADD COLUMN IF NOT EXISTS timed_requests bigint DEFAULT 0 NOT NULL;
 
+-- Resumable historical proxy-host hourly rollup checkpoint (matches migration.go).
+CREATE TABLE IF NOT EXISTS public.traffic_hourly_backfill (
+    id smallint PRIMARY KEY CHECK (id = 1),
+    next_hour timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- Domain entries in access lists (#320): an allowed DNS name is stored as a placeholder
 -- row (directive 'deny', address 'all', hostname = the name). A version that does not
 -- know the column renders that row as "deny all", so a downgrade, or a backup restored
@@ -4824,3 +4837,7 @@ ALTER TABLE public.global_geo_restrictions ADD COLUMN IF NOT EXISTS allowed_host
 ALTER TABLE public.rate_limits ADD COLUMN IF NOT EXISTS whitelist_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
 ALTER TABLE public.global_rate_limits ADD COLUMN IF NOT EXISTS whitelist_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
 ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS global_trusted_hostnames text[] DEFAULT '{}'::text[] NOT NULL;
+
+-- Seconds an old nginx worker keeps its connections after a reload (#358).
+-- NULL takes the built-in default, 0 waits for every connection.
+ALTER TABLE public.global_settings ADD COLUMN IF NOT EXISTS worker_shutdown_timeout integer;
